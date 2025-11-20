@@ -405,7 +405,7 @@ async def show_time_slots(callback: types.CallbackQuery, appointment_type: str):
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
 
-@router.callback_query(F.data.startswith('appointment_time_'))
+'''@router.callback_query(F.data.startswith('appointment_time_'))
 async def select_appointment_time(callback: types.CallbackQuery):
     """Обрабатывает выбор временного интервала"""
     data = callback.data
@@ -437,7 +437,7 @@ async def select_appointment_time(callback: types.CallbackQuery):
     await callback.answer(
         f"✅ Запись на {type_text} прием к врачу {doctor_name} на {day} {month_name} {year} {time_slot}",
         show_alert=True
-    )
+    )'''
 
 def generate_time_slots(start_time: str, end_time: str, patient_time: int) -> list:
     """Генерирует список временных интервалов в формате ЧЧ:00-ЧЧ:30"""
