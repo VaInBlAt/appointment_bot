@@ -88,3 +88,11 @@ def get_doctor_schedule(doctor_id: int) -> dict:
     """Получает расписание врача из JSON"""
     schedules_data = load_json_data('schedules')
     return schedules_data.get("doctors", {}).get(str(doctor_id), {})
+
+def get_month_name(month: int) -> str:
+    """Возвращает название месяца на русском"""
+    months = [
+        "Января", "Февраля", "Марта", "Апреля", "Мая", "Июня",
+        "Июля", "Августа", "Сентября", "Октября", "Ноября", "Декабря"
+    ]
+    return months[month-1] if 1 <= month <= 12 else ""
