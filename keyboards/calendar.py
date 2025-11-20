@@ -12,7 +12,7 @@ class CalendarKeyboard:
     DAYS_RU = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     
     @staticmethod
-    def create_calendar(year: int, month: int, is_doctor: bool = False, weekends: set = None) -> InlineKeyboardMarkup:
+    def create_calendar(year: int, month: int, is_doctor: bool = False, weekends: set = None, doctor_id: int = None) -> InlineKeyboardMarkup:
         """Создает календарь на указанный месяц и год"""
         builder = InlineKeyboardBuilder()
         today = datetime.now().date()
@@ -47,16 +47,33 @@ class CalendarKeyboard:
                 builder.add(InlineKeyboardButton(text=" ", callback_data="ignore"))
             else:
                 # Проверяем, является ли дата выходным для врача
-                if is_doctor and weekends and date_str in weekends:
-                    builder.add(InlineKeyboardButton(
-                        text="✅", 
-                        callback_data=f"appointment_date_{year}_{month}_{day}"
-                    ))
+                if weekends and date_str in weekends:
+                    if is_doctor:
+                        # Для врача - зеленые галочки
+                        builder.add(InlineKeyboardButton(
+                            text="✅", 
+                            callback_data="ignore"
+                        ))
+                    else:
+                        # Для пользователя - красные крестики
+                        builder.add(InlineKeyboardButton(
+                            text="❌", 
+                            callback_data="ignore"
+                        ))
                 else:
-                    builder.add(InlineKeyboardButton(
-                        text=str(day), 
-                        callback_data=f"appointment_date_{year}_{month}_{day}"
-                    ))
+                    # Рабочие дни
+                    if doctor_id:
+                        # Календарь конкретного врача
+                        builder.add(InlineKeyboardButton(
+                            text=str(day), 
+                            callback_data=f"appointment_doctor_{doctor_id}_{year}_{month}_{day}"
+                        ))
+                    else:
+                        # Личный календарь
+                        builder.add(InlineKeyboardButton(
+                            text=str(day), 
+                            callback_data=f"appointment_date_{year}_{month}_{day}"
+                        ))
         
         # Добавляем пустые кнопки в конце
         total_cells = first_weekday + days_in_month
@@ -69,33 +86,48 @@ class CalendarKeyboard:
         layout = [1, 7] + [7] * ((total_cells + remaining_cells) // 7)
         builder.adjust(*layout)
         
-        # Добавляем навигацию (только между текущим и следующим месяцем)
+        # Добавляем навигацию
         nav_buttons = []
         
         today = datetime.now()
         current_year = today.year
         current_month = today.month
         
+        # Определяем callback префикс для навигации
+        nav_prefix = "doctor_calendar_nav" if doctor_id else "calendar_nav"
+        
         # Если показываем текущий месяц - добавляем только кнопку вперед
         if year == current_year and month == current_month:
             next_year, next_month = CalendarKeyboard._get_next_month(year, month)
-            nav_buttons.append(InlineKeyboardButton(
-                text="▶️", 
-                callback_data=f"calendar_next_{next_year}_{next_month}"
-            ))
+            if doctor_id:
+                nav_buttons.append(InlineKeyboardButton(
+                    text="▶️", 
+                    callback_data=f"doctor_calendar_nav_{doctor_id}_{next_year}_{next_month}"
+                ))
+            else:
+                nav_buttons.append(InlineKeyboardButton(
+                    text="▶️", 
+                    callback_data=f"calendar_nav_{next_year}_{next_month}"
+                ))
         
         # Если показываем следующий месяц - добавляем только кнопку назад
         else:
             prev_year, prev_month = CalendarKeyboard._get_previous_month(year, month)
-            nav_buttons.append(InlineKeyboardButton(
-                text="◀️", 
-                callback_data=f"calendar_prev_{prev_year}_{prev_month}"
-            ))
+            if doctor_id:
+                nav_buttons.append(InlineKeyboardButton(
+                    text="◀️", 
+                    callback_data=f"doctor_calendar_nav_{doctor_id}_{prev_year}_{prev_month}"
+                ))
+            else:
+                nav_buttons.append(InlineKeyboardButton(
+                    text="◀️", 
+                    callback_data=f"calendar_nav_{prev_year}_{prev_month}"
+                ))
         
         builder.row(*nav_buttons)
         
-        # Добавляем кнопку "Выбрать выходные" только для врачей
-        if is_doctor:
+        # Добавляем кнопку "Выбрать выходные" только для врачей в их личном календаре
+        if is_doctor and not doctor_id:
             builder.row(InlineKeyboardButton(text="Выбрать выходные", callback_data="weekend_selection"))
         
         # Добавляем кнопку "На главную"
