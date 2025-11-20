@@ -21,7 +21,7 @@ async def start_handler(update: types.Message | types.CallbackQuery, state: FSMC
         user_data = get_user_data(user_id)
         role_text = "врач" if user_data["registration_data"]["role"] == "doctor" else "пациент"
         text = f"👋 С возвращением, {user_data['registration_data']['fio']}!\nВы зарегистрированы как {role_text}."
-        markup = basic.main_menu(role_text)
+        markup = basic.main_menu()
     else:
         text = "👋 Добро пожаловать!\nЕсли вы здесь впервые, пожалуйста, зарегистрируйтесь"
         markup = basic.start()
@@ -253,6 +253,6 @@ async def save_registration_data(callback: types.CallbackQuery, state: FSMContex
     
     await callback.message.edit_text(
         "✅ Регистрация завершена! Ваши данные сохранены.",
-        reply_markup=basic.main_menu(data.get('registration_role'))
+        reply_markup=basic.main_menu()
     )
     await state.clear()

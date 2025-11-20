@@ -175,13 +175,13 @@ async def navigate_doctor_calendar(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith('appointment_doctor_'))
 async def select_doctor_appointment_date(callback: types.CallbackQuery):
-    """Обрабатывает выбор даты для записи к конкретному врачу"""
+    """Обрабатывает выбор даты для записи к конкретному врачу и показывает выбор типа приема"""
     data = callback.data
     parts = data.split('_')
     
-    if len(parts) != 7:
+    '''if len(parts) != 7:
         await callback.answer("Ошибка выбора даты")
-        return
+        return'''
     
     doctor_id = int(parts[2])
     year = int(parts[3])
@@ -205,8 +205,24 @@ async def select_doctor_appointment_date(callback: types.CallbackQuery):
     doctor_name = reg_data['fio']
     month_name = CalendarKeyboard.MONTHS_RU[month-1]
     
-    # TODO: Здесь будет логика записи на прием к врачу
-    await callback.answer(
-        f"✅ Запись к врачу {doctor_name} на {day} {month_name} {year}\nЗапрос отправлен!",
-        show_alert=True
-    )
+    # Формируем текст
+    text = f"Запись на {day} {month_name} {year}.\nПервичный прием к врачу {doctor_name}"
+    
+    # Создаем клавиатуру с выбором типа приема
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="Первичная запись", 
+        callback_data=f"appointment_primary_{doctor_id}_{year}_{month}_{day}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="Вторичная запись", 
+        callback_data=f"appointment_repeat_{doctor_id}_{year}_{month}_{day}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="🏠 На главную", 
+        callback_data="exit"
+    ))
+    builder.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()

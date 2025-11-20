@@ -267,3 +267,193 @@ async def navigate_calendar(callback: types.CallbackQuery):
     
     await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
+
+@router.callback_query(F.data.startswith('appointment_date_'))
+async def select_appointment_date(callback: types.CallbackQuery):
+    """Обрабатывает выбор даты и показывает выбор типа приема"""
+    data = callback.data
+    parts = data.split('_')
+    
+    if len(parts) != 5:
+        await callback.answer("Ошибка выбора даты")
+        return
+    
+    year = int(parts[2])
+    month = int(parts[3])
+    day = int(parts[4])
+    
+    selected_date = datetime(year, month, day).date()
+    today = datetime.now().date()
+    
+    if selected_date < today:
+        await callback.answer("Нельзя выбрать прошедшую дату")
+        return
+
+    # Определяем doctor_id (для личного календаря - текущий пользователь)
+    user_id = callback.from_user.id
+    doctor_id = user_id
+    
+    # Получаем данные врача
+    doctor_data = get_user_data(doctor_id)
+    if not doctor_data or doctor_data["registration_data"]["role"] != "doctor":
+        await callback.answer("❌ Функция записи доступна только врачам!", show_alert=True)
+        return
+    
+    reg_data = doctor_data["registration_data"]
+    doctor_name = reg_data['fio']
+    month_name = CalendarKeyboard.MONTHS_RU[month-1]
+    
+    # Формируем текст
+    text = f"Запись на {day} {month_name} {year}.\nПервичный прием к врачу {doctor_name}"
+    
+    # Создаем клавиатуру с выбором типа приема
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(
+        text="Первичная запись", 
+        callback_data=f"appointment_primary_{doctor_id}_{year}_{month}_{day}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="Вторичная запись", 
+        callback_data=f"appointment_repeat_{doctor_id}_{year}_{month}_{day}"
+    ))
+    builder.add(InlineKeyboardButton(
+        text="🏠 На главную", 
+        callback_data="exit"
+    ))
+    builder.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+@router.callback_query(F.data.startswith('appointment_primary_'))
+async def choose_primary_time(callback: types.CallbackQuery):
+    """Показывает доступные временные интервалы для первичного приема"""
+    await show_time_slots(callback, "primary")
+
+@router.callback_query(F.data.startswith('appointment_repeat_'))
+async def choose_repeat_time(callback: types.CallbackQuery):
+    """Показывает доступные временные интервалы для вторичного приема"""
+    await show_time_slots(callback, "repeat")
+
+async def show_time_slots(callback: types.CallbackQuery, appointment_type: str):
+    """Показывает доступные временные интервалы"""
+    data = callback.data
+    parts = data.split('_')
+    
+    if len(parts) != 6:
+        await callback.answer("Ошибка выбора типа приема")
+        return
+    
+    doctor_id = int(parts[2])
+    year = int(parts[3])
+    month = int(parts[4])
+    day = int(parts[5])
+    
+    # Получаем данные врача
+    doctor_data = get_user_data(doctor_id)
+    if not doctor_data:
+        await callback.answer("❌ Врач не найден!", show_alert=True)
+        return
+    
+    # Получаем расписание врача
+    schedule = get_doctor_schedule(doctor_id)
+    if not schedule:
+        await callback.answer("❌ У врача не настроено расписание!", show_alert=True)
+        return
+    
+    # Определяем временной диапазон в зависимости от типа приема
+    if appointment_type == "primary":
+        start_time = schedule.get("primary_start")
+        end_time = schedule.get("primary_end")
+        type_text = "Первичный"
+    else:
+        start_time = schedule.get("repeat_start")
+        end_time = schedule.get("repeat_end")
+        type_text = "Вторичный"
+    
+    if not start_time or not end_time:
+        await callback.answer("❌ В расписании врача не указано время для данного типа приема!", show_alert=True)
+        return
+    
+    # Генерируем временные интервалы
+    time_slots = generate_time_slots(start_time, end_time, schedule["patient_time"])
+    
+    if not time_slots:
+        await callback.answer("❌ Нет доступных временных интервалов!", show_alert=True)
+        return
+    
+    reg_data = doctor_data["registration_data"]
+    doctor_name = reg_data['fio']
+    month_name = CalendarKeyboard.MONTHS_RU[month-1]
+    
+    text = f"Запись на {day} {month_name} {year}.\n{type_text} прием к врачу {doctor_name}"
+    
+    # Создаем клавиатуру с временными интервалами
+    builder = InlineKeyboardBuilder()
+    for slot in time_slots:
+        builder.add(InlineKeyboardButton(
+            text=slot,
+            callback_data=f"appointment_time_{doctor_id}_{year}_{month}_{day}_{slot}_{appointment_type}"
+        ))
+    
+    builder.add(InlineKeyboardButton(
+        text="🏠 На главную", 
+        callback_data="exit"
+    ))
+    builder.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+@router.callback_query(F.data.startswith('appointment_time_'))
+async def select_appointment_time(callback: types.CallbackQuery):
+    """Обрабатывает выбор временного интервала"""
+    data = callback.data
+    parts = data.split('_')
+    
+    if len(parts) != 8:
+        await callback.answer("Ошибка выбора времени")
+        return
+    
+    doctor_id = int(parts[2])
+    year = int(parts[3])
+    month = int(parts[4])
+    day = int(parts[5])
+    time_slot = parts[6]
+    appointment_type = parts[7]
+    
+    # Получаем данные врача
+    doctor_data = get_user_data(doctor_id)
+    if not doctor_data:
+        await callback.answer("❌ Врач не найден!", show_alert=True)
+        return
+    
+    reg_data = doctor_data["registration_data"]
+    doctor_name = reg_data['fio']
+    
+    type_text = "Первичный" if appointment_type == "primary" else "Вторичный"
+    month_name = CalendarKeyboard.MONTHS_RU[month-1]
+    
+    await callback.answer(
+        f"✅ Запись на {type_text} прием к врачу {doctor_name} на {day} {month_name} {year} {time_slot}",
+        show_alert=True
+    )
+
+def generate_time_slots(start_time: str, end_time: str, patient_time: int) -> list:
+    """Генерирует список временных интервалов в формате ЧЧ:00-ЧЧ:30"""
+    slots = []
+    start_h, start_m = map(int, start_time.split(':'))
+    end_h, end_m = map(int, end_time.split(':'))
+    
+    start_total = start_h * 60 + start_m
+    end_total = end_h * 60 + end_m
+    
+    current = start_total
+    while current + patient_time <= end_total:
+        # Форматируем начало и конец интервала
+        start_slot = f"{current//60:02d}:{(current%60):02d}"
+        end_slot = f"{(current+patient_time)//60:02d}:{((current+patient_time)%60):02d}"
+        slots.append(f"{start_slot}-{end_slot}")
+        current += patient_time
+    
+    return slots

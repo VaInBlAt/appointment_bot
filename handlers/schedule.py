@@ -175,7 +175,7 @@ async def save_schedule_data(message: types.Message, state: FSMContext):
 
     await message.answer(
         confirmation_text,
-        reply_markup=basic.main_menu("doctor")
+        reply_markup=basic.main_menu()
     )
     await state.clear()
 
