@@ -83,3 +83,8 @@ def has_doctor_schedule(user_id: str) -> bool:
     """Проверяет, есть ли у врача настроенное расписание"""
     schedules_data = load_json_data('schedules')
     return str(user_id) in schedules_data.get("doctors", {})
+
+def get_doctor_schedule(doctor_id: int) -> dict:
+    """Получает расписание врача из JSON"""
+    schedules_data = load_json_data('schedules')
+    return schedules_data.get("doctors", {}).get(str(doctor_id), {})
