@@ -41,7 +41,7 @@ class MainMenu:
         return KeyboardBuilder.inline(
             buttons={
                 '📊 Личный кабинет': 'profile',
-                '📅 Записаться на прием': 'appointment_calendar',
+                '📅 Расписание': 'appointment_calendar',
                 '🔎 Найти врача': 'finddoctor',
                 '📋 Мои записи': 'my_appointments'
             },
