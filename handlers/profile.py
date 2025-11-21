@@ -23,12 +23,16 @@ async def show_user_profile(callback: types.CallbackQuery):
     # Формируем текст профиля
     role_text = "👨‍⚕️ Врач" if reg_data["role"] == "doctor" else "👤 Пациент"
     fio = reg_data.get("fio", "Не указано")
+    birth_date = reg_data.get("birth_date", "Не указано")
+    phone = reg_data.get("phone", "Не указано")
     
     profile_text = f"""
 📊 Личный кабинет
 
 {role_text}
 📝 ФИО: {fio}
+📅 Дата рождения: {birth_date}
+📞 Телефон: {phone}
 """
     
     # Добавляем дополнительные поля для врачей

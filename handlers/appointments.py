@@ -5,6 +5,7 @@ from handlers.states import States
 from user_utils import is_user_registered, get_user_data
 from JSONfunctions import load_json_data, save_json_data
 from datetime import datetime
+from handlers.calendar import get_booked_time_slots
 import re
 
 router = Router()
@@ -40,93 +41,80 @@ async def start_appointment_process(callback: types.CallbackQuery, state: FSMCon
         await callback.answer("❌ Вы не зарегистрированы!", show_alert=True)
         return
     
-    # Сохраняем данные записи в состоянии
-    await state.update_data(
-        appointment_doctor_id=doctor_id,
-        appointment_year=year,
-        appointment_month=month,
-        appointment_day=day,
-        appointment_time_slot=time_slot,
+    # Проверяем, заполнены ли дата рождения и телефон
+    reg_data = patient_data["registration_data"]
+    birth_date = reg_data.get("birth_date")
+    phone = reg_data.get("phone")
+    
+    # Если данные не заполнены, просим заполнить
+    if birth_date == "Не указано" or phone == "Не указано":
+        await state.update_data(
+            appointment_doctor_id=doctor_id,
+            appointment_year=year,
+            appointment_month=month,
+            appointment_day=day,
+            appointment_time_slot=time_slot,
+            appointment_type=appointment_type,
+            appointment_patient_fio=reg_data["fio"]
+        )
+        
+        text = f"""📅 Запись на прием
+
+Для завершения записи необходимо заполнить недостающие данные:"""
+        
+        if birth_date == "Не указано":
+            text += "\n📅 Дата рождения: НЕ ЗАПОЛНЕНО"
+        else:
+            text += f"\n📅 Дата рождения: {birth_date}"
+            
+        if phone == "Не указано":
+            text += "\n📞 Телефон: НЕ ЗАПОЛНЕНО"
+        else:
+            text += f"\n📞 Телефон: {phone}"
+        
+        text += "\n\nПожалуйста, заполните недостающие данные в личном кабинете."
+        
+        await callback.message.edit_text(text, reply_markup=basic.main_menu())
+        await callback.answer()
+        return
+    
+    # Если все данные заполнены - сразу сохраняем запись
+    await save_appointment_data_direct(
+        doctor_id=doctor_id,
+        year=year,
+        month=month,
+        day=day,
+        time_slot=time_slot,
         appointment_type=appointment_type,
-        appointment_patient_fio=patient_data["registration_data"]["fio"]
-    )
-    
-    reg_data = doctor_data["registration_data"]
-    doctor_name = reg_data['fio']
-    month_name = get_month_name(month)
-    
-    type_text = "Первичный" if appointment_type == "primary" else "Вторичный"
-    
-    text = f"""📅 Запись на прием
-
-👨‍⚕️ Врач: {doctor_name}
-📅 Дата: {day} {month_name} {year}
-⏰ Время: {time_slot}
-🎯 Тип: {type_text} прием
-👤 Пациент: {patient_data['registration_data']['fio']}
-
-Для завершения записи введите вашу дату рождения в формате ДД.ММ.ГГГГ:
-
-Например: 15.05.1990"""
-    
-    await state.set_state(States.appointment_birth_date)
-    await callback.message.edit_text(text, reply_markup=basic.exit())
-    await callback.answer()
-
-@router.message(States.appointment_birth_date)
-async def process_birth_date(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод даты рождения"""
-    birth_date = message.text.strip()
-    
-    if not validate_birth_date(birth_date):
-        await message.answer("❌ Неверный формат даты. Используйте ДД.ММ.ГГГГ (например: 15.05.1990):")
-        return
-    
-    await state.update_data(appointment_birth_date=birth_date)
-    await state.set_state(States.appointment_phone)
-    
-    await message.answer(
-        "📞 Теперь введите ваш номер телефона:\n\nНапример: +79123456789 или 89123456789",
-        reply_markup=basic.exit()
+        patient_id=patient_id,
+        patient_data=patient_data,
+        callback=callback
     )
 
-@router.message(States.appointment_phone)
-async def process_phone(message: types.Message, state: FSMContext):
-    """Обрабатывает ввод номера телефона и сохраняет запись"""
-    phone = message.text.strip()
-    
-    if not validate_phone(phone):
-        await message.answer("❌ Неверный формат номера. Используйте +79123456789 или 89123456789:")
+async def save_appointment_data_direct(doctor_id: int, year: int, month: int, day: int, 
+                                     time_slot: str, appointment_type: str, 
+                                     patient_id: int, patient_data: dict, callback: types.CallbackQuery):
+    """Сразу сохраняет запись если все данные пациента заполнены"""
+    # Проверяем, не занят ли уже этот слот
+    booked_slots = get_booked_time_slots(doctor_id, year, month, day)
+    if time_slot in booked_slots:
+        await callback.answer("❌ Это время уже занято. Пожалуйста, выберите другое время.", show_alert=True)
         return
     
-    # Получаем все данные из состояния
-    data = await state.get_data()
+    reg_data = patient_data["registration_data"]
     
     # Сохраняем запись в JSON
-    await save_appointment_data(data, phone, message.from_user.id)
-    
-    # Формируем текст подтверждения
-    confirmation_text = await format_confirmation_text(data, phone)
-    
-    await message.answer(confirmation_text, reply_markup=basic.main_menu())
-    await state.clear()
-
-async def save_appointment_data(data: dict, phone: str, patient_id: int):
-    """Сохраняет данные записи в JSON"""
-    doctor_id = data['appointment_doctor_id']
-    
-    # Формируем данные записи
     appointment_data = {
         "appointment_id": generate_appointment_id(),
         "patient_id": str(patient_id),
-        "patient_fio": data['appointment_patient_fio'],
-        "patient_birth_date": data['appointment_birth_date'],
-        "patient_phone": phone,
+        "patient_fio": reg_data["fio"],
+        "patient_birth_date": reg_data["birth_date"],
+        "patient_phone": reg_data["phone"],
         "doctor_id": str(doctor_id),
-        "date": f"{data['appointment_year']}-{data['appointment_month']:02d}-{data['appointment_day']:02d}",
-        "time_slot": data['appointment_time_slot'],
-        "appointment_type": data['appointment_type'],
-        "status": "pending",  # pending, confirmed, cancelled
+        "date": f"{year}-{month:02d}-{day:02d}",
+        "time_slot": time_slot,
+        "appointment_type": appointment_type,
+        "status": "pending",
         "created_at": datetime.now().isoformat()
     }
     
@@ -154,49 +142,29 @@ async def save_appointment_data(data: dict, phone: str, patient_id: int):
     
     # Сохраняем в JSON
     save_json_data(appointments_data, 'appointments')
-
-async def format_confirmation_text(data: dict, phone: str) -> str:
-    """Формирует текст подтверждения записи"""
-    doctor_id = data['appointment_doctor_id']
+    
+    # Формируем текст подтверждения
     doctor_data = get_user_data(doctor_id)
-    doctor_name = doctor_data["registration_data"]["fio"]
+    doctor_name = doctor_data["registration_data"]["fio"] if doctor_data else "Неизвестный врач"
+    month_name = get_month_name(month)
+    type_text = "Первичный" if appointment_type == "primary" else "Вторичный"
     
-    month_name = get_month_name(data['appointment_month'])
-    type_text = "Первичный" if data['appointment_type'] == "primary" else "Вторичный"
-    
-    return f"""✅ Запись успешно создана!
+    confirmation_text = f"""✅ Запись успешно создана!
 
 📋 Детали записи:
 👨‍⚕️ Врач: {doctor_name}
-📅 Дата: {data['appointment_day']} {month_name} {data['appointment_year']}
-⏰ Время: {data['appointment_time_slot']}
+📅 Дата: {day} {month_name} {year}
+⏰ Время: {time_slot}
 🎯 Тип приема: {type_text}
-👤 Пациент: {data['appointment_patient_fio']}
-📅 Дата рождения: {data['appointment_birth_date']}
-📞 Телефон: {phone}
-"""
+👤 Пациент: {reg_data['fio']}
+📅 Дата рождения: {reg_data['birth_date']}
+📞 Телефон: {reg_data['phone']}
 
-def validate_birth_date(date_str: str) -> bool:
-    """Проверяет корректность формата даты рождения ДД.ММ.ГГГГ"""
-    pattern = r'^(0[1-9]|[12][0-9]|3[01])\.(0[1-9]|1[0-2])\.(19|20)\d{2}$'
-    if not re.match(pattern, date_str):
-        return False
+Запись ожидает подтверждения врачом."""
     
-    # Проверяем что дата не в будущем
-    try:
-        day, month, year = map(int, date_str.split('.'))
-        birth_date = datetime(year, month, day)
-        return birth_date <= datetime.now()
-    except ValueError:
-        return False
-
-def validate_phone(phone: str) -> bool:
-    """Проверяет корректность формата номера телефона"""
-    # Российские номера: +7XXXXXXXXXX или 8XXXXXXXXXX
-    pattern = r'^(\+7|8)\d{10}$'
-    phone_clean = re.sub(r'[\s\-\(\)]', '', phone)
-    return bool(re.match(pattern, phone_clean))
-
+    await callback.message.edit_text(confirmation_text, reply_markup=basic.main_menu())
+    await callback.answer()
+    
 def generate_appointment_id() -> str:
     """Генерирует уникальный ID для записи"""
     import time

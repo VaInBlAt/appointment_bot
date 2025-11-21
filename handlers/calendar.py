@@ -6,8 +6,9 @@ from keyboards.weekend_selection import WeekendSelectionKeyboard
 from handlers.states import States
 from user_utils import *
 from datetime import datetime
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from JSONfunctions import load_json_data
 
 router = Router()
 temp_weekends_storage = {}
@@ -69,31 +70,6 @@ async def navigate_calendar(callback: types.CallbackQuery):
     
     await callback.message.edit_text(text, reply_markup=markup)
     await callback.answer()
-
-@router.callback_query(F.data.startswith('appointment_date_'))
-async def select_appointment_date(callback: types.CallbackQuery):
-    """Обрабатывает выбор даты для записи"""
-    data = callback.data
-    parts = data.split('_')
-    
-    if len(parts) != 5:
-        await callback.answer("Ошибка выбора даты")
-        return
-    
-    year = int(parts[2])
-    month = int(parts[3])
-    day = int(parts[4])
-    
-    selected_date = datetime(year, month, day).date()
-    today = datetime.now().date()
-    
-    if selected_date < today:
-        await callback.answer("Нельзя выбрать прошедшую дату")
-        return
-
-    month_name = CalendarKeyboard.MONTHS_RU[month-1]
-    
-    await callback.answer(f"Выбрана дата: {day} {month_name} {year}", show_alert=True)
 
 @router.callback_query(F.data == 'weekend_selection')
 async def start_weekend_selection(callback: types.CallbackQuery):
@@ -270,7 +246,7 @@ async def navigate_calendar(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith('appointment_date_'))
 async def select_appointment_date(callback: types.CallbackQuery):
-    """Обрабатывает выбор даты и показывает выбор типа приема"""
+    """Обрабатывает выбор даты в личном календаре врача"""
     data = callback.data
     parts = data.split('_')
     
@@ -289,8 +265,66 @@ async def select_appointment_date(callback: types.CallbackQuery):
         await callback.answer("Нельзя выбрать прошедшую дату")
         return
 
-    # Определяем doctor_id (для личного календаря - текущий пользователь)
     user_id = callback.from_user.id
+    
+    # Проверяем, является ли пользователь врачом
+    if is_user_registered(user_id):
+        user_data = get_user_data(user_id)
+        if user_data["registration_data"]["role"] == "doctor":
+            # Показываем записи на выбранный день
+            await show_doctor_day_appointments(callback, user_id, year, month, day)
+            return
+    
+    # Для пациентов или если что-то пошло не так - обычный выбор типа приема
+    await show_appointment_type_selection(callback, user_id, year, month, day)
+
+async def show_doctor_day_appointments(callback: types.CallbackQuery, doctor_id: int, year: int, month: int, day: int):
+    """Показывает записи врача на конкретный день"""
+    appointments_data = load_json_data('appointments')
+    
+    # Форматируем дату для поиска
+    target_date = f"{year}-{month:02d}-{day:02d}"
+    
+    # Находим записи врача на эту дату
+    day_appointments = []
+    for appointment_id, appointment in appointments_data.get("appointments", {}).items():
+        if (appointment["doctor_id"] == str(doctor_id) and 
+            appointment["date"] == target_date):
+            day_appointments.append(appointment)
+    
+    # Сортируем записи по времени
+    day_appointments.sort(key=lambda x: x['time_slot'])
+    
+    month_name = CalendarKeyboard.MONTHS_RU[month-1]
+    
+    # Формируем текст
+    text = f"📅 Записи на {day} {month_name} {year}\n\n"
+    
+    if not day_appointments:
+        text += "На этот день записей нет."
+    else:
+        text += f"Всего записей: {len(day_appointments)}\n\n"
+        
+        for appointment in day_appointments:
+            time_slot = appointment["time_slot"]
+            patient_fio = appointment["patient_fio"]
+            appointment_type = "Первичный" if appointment["appointment_type"] == "primary" else "Вторичный"
+            status = get_appointment_status_text(appointment["status"])
+            
+            text += f"⏰ {time_slot} - {patient_fio}\n"
+            text += f"   🎯 {appointment_type} | {status}\n\n"
+    
+    # Создаем клавиатуру
+    builder = InlineKeyboardBuilder()
+    builder.add(InlineKeyboardButton(text="🏠 На главную", callback_data="exit"))
+    builder.adjust(1)
+    
+    await callback.message.edit_text(text, reply_markup=builder.as_markup())
+    await callback.answer()
+
+async def show_appointment_type_selection(callback: types.CallbackQuery, user_id: int, year: int, month: int, day: int):
+    """Показывает выбор типа приема (старая логика для пациентов)"""
+    # Определяем doctor_id (для личного календаря - текущий пользователь)
     doctor_id = user_id
     
     # Получаем данные врача
@@ -324,6 +358,15 @@ async def select_appointment_date(callback: types.CallbackQuery):
     
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
+
+def get_appointment_status_text(status: str) -> str:
+    """Возвращает текстовое представление статуса записи"""
+    status_map = {
+        "pending": "⏳ Ожидает",
+        "confirmed": "✅ Подтверждена",
+        "cancelled": "❌ Отменена"
+    }
+    return status_map.get(status, "❓ Неизвестно")
 
 @router.callback_query(F.data.startswith('appointment_primary_'))
 async def choose_primary_time(callback: types.CallbackQuery):
@@ -375,11 +418,15 @@ async def show_time_slots(callback: types.CallbackQuery, appointment_type: str):
         await callback.answer("❌ В расписании врача не указано время для данного типа приема!", show_alert=True)
         return
     
-    # Генерируем временные интервалы
-    time_slots = generate_time_slots(start_time, end_time, schedule["patient_time"])
+    # Получаем занятые временные слоты на эту дату
+    booked_slots = get_booked_time_slots(doctor_id, year, month, day)
     
-    if not time_slots:
-        await callback.answer("❌ Нет доступных временных интервалов!", show_alert=True)
+    # Генерируем временные интервалы и фильтруем занятые
+    time_slots = generate_time_slots(start_time, end_time, schedule["patient_time"])
+    available_slots = [slot for slot in time_slots if slot not in booked_slots]
+    
+    if not available_slots:
+        await callback.answer("❌ На этот день нет свободных временных слотов!", show_alert=True)
         return
     
     reg_data = doctor_data["registration_data"]
@@ -388,9 +435,14 @@ async def show_time_slots(callback: types.CallbackQuery, appointment_type: str):
     
     text = f"Запись на {day} {month_name} {year}.\n{type_text} прием к врачу {doctor_name}"
     
+    if booked_slots:
+        text += f"\n\n✅ Свободные слоты ({len(available_slots)} из {len(time_slots)})"
+    else:
+        text += f"\n\n✅ Доступные слоты: {len(available_slots)}"
+    
     # Создаем клавиатуру с временными интервалами
     builder = InlineKeyboardBuilder()
-    for slot in time_slots:
+    for slot in available_slots:
         builder.add(InlineKeyboardButton(
             text=slot,
             callback_data=f"appointment_time_{doctor_id}_{year}_{month}_{day}_{slot}_{appointment_type}"
@@ -405,39 +457,23 @@ async def show_time_slots(callback: types.CallbackQuery, appointment_type: str):
     await callback.message.edit_text(text, reply_markup=builder.as_markup())
     await callback.answer()
 
-'''@router.callback_query(F.data.startswith('appointment_time_'))
-async def select_appointment_time(callback: types.CallbackQuery):
-    """Обрабатывает выбор временного интервала"""
-    data = callback.data
-    parts = data.split('_')
+def get_booked_time_slots(doctor_id: int, year: int, month: int, day: int) -> list:
+    """Возвращает список занятых временных слотов на указанную дату"""
+    appointments_data = load_json_data('appointments')
     
-    if len(parts) != 8:
-        await callback.answer("Ошибка выбора времени")
-        return
+    # Форматируем дату для поиска
+    target_date = f"{year}-{month:02d}-{day:02d}"
     
-    doctor_id = int(parts[2])
-    year = int(parts[3])
-    month = int(parts[4])
-    day = int(parts[5])
-    time_slot = parts[6]
-    appointment_type = parts[7]
+    booked_slots = []
     
-    # Получаем данные врача
-    doctor_data = get_user_data(doctor_id)
-    if not doctor_data:
-        await callback.answer("❌ Врач не найден!", show_alert=True)
-        return
+    # Ищем все записи врача на эту дату
+    for appointment_id, appointment in appointments_data.get("appointments", {}).items():
+        if (appointment["doctor_id"] == str(doctor_id) and 
+            appointment["date"] == target_date and
+            appointment["status"] != "cancelled"):  # Не учитываем отмененные записи
+            booked_slots.append(appointment["time_slot"])
     
-    reg_data = doctor_data["registration_data"]
-    doctor_name = reg_data['fio']
-    
-    type_text = "Первичный" if appointment_type == "primary" else "Вторичный"
-    month_name = CalendarKeyboard.MONTHS_RU[month-1]
-    
-    await callback.answer(
-        f"✅ Запись на {type_text} прием к врачу {doctor_name} на {day} {month_name} {year} {time_slot}",
-        show_alert=True
-    )'''
+    return booked_slots
 
 def generate_time_slots(start_time: str, end_time: str, patient_time: int) -> list:
     """Генерирует список временных интервалов в формате ЧЧ:00-ЧЧ:30"""
