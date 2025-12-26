@@ -9,6 +9,7 @@ from datetime import datetime
 from aiogram.types import InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from JSONfunctions import load_json_data
+from config import settings
 
 router = Router()
 temp_weekends_storage = {}
@@ -104,7 +105,7 @@ async def start_weekend_selection(callback: types.CallbackQuery):
 
 @router.callback_query(F.data.startswith('weekend_select_'))
 async def select_weekend_day(callback: types.CallbackQuery):
-    """Добавляет/убирает день из выбранных выходных"""
+    """Добавляет/убирает день из выбранных выходных с уведомлениями"""
     user_id = callback.from_user.id
     
     # Проверяем, что пользователь - врач
@@ -133,23 +134,34 @@ async def select_weekend_day(callback: types.CallbackQuery):
     
     weekends = temp_weekends_storage[user_id]
     
-    # Переключаем состояние
-    if date_str in weekends:
+    # Проверяем, добавляем или убираем выходной
+    was_weekend = date_str in weekends
+    
+    if was_weekend:
+        # Убираем выходной
         weekends.remove(date_str)
+        action = "removed"
     else:
+        # Добавляем выходной - проверяем есть ли записи на этот день
+        appointments_on_date = get_appointments_on_date(user_id, year, month, day)
+        if appointments_on_date:
+            # Есть записи - отправляем уведомления и удаляем записи
+            await notify_patients_about_cancellation(appointments_on_date, selected_date, settings.BOT_TOKEN)
+            delete_appointments_on_date(appointments_on_date)
+        
         weekends.add(date_str)
+        action = "added"
     
     # Обновляем временное хранилище
     temp_weekends_storage[user_id] = weekends
     
     # Обновляем календарь
     markup = WeekendSelectionKeyboard.create_calendar(year, month, weekends)
-    
+  
     await callback.message.edit_text(
         "📅 Выбор выходных дней\nНажимайте на даты, чтобы отметить их как выходные\nЗатем нажмите 'Подтвердить ✅'",
         reply_markup=markup
     )
-    await callback.answer()
 
 @router.callback_query(F.data.startswith('weekend_nav_'))
 async def navigate_weekend_calendar(callback: types.CallbackQuery):
@@ -493,3 +505,67 @@ def generate_time_slots(start_time: str, end_time: str, patient_time: int) -> li
         current += patient_time
     
     return slots
+
+def get_appointments_on_date(doctor_id: int, year: int, month: int, day: int) -> list:
+    """Возвращает все записи врача на указанную дату"""
+    appointments_data = load_json_data('appointments')
+    
+    target_date = f"{year}-{month:02d}-{day:02d}"
+    appointments_on_date = []
+    
+    for appointment_id, appointment in appointments_data.get("appointments", {}).items():
+        if (appointment["doctor_id"] == str(doctor_id) and 
+            appointment["date"] == target_date and
+            appointment["status"] != "cancelled"):
+            appointments_on_date.append(appointment)
+    
+    return appointments_on_date
+
+async def notify_patients_about_cancellation(appointments: list, date: datetime.date, bot_token: str):
+    """Отправляет уведомления пациентам об отмене записей"""
+    from aiogram import Bot
+    
+    # Создаем экземпляр бота с токеном
+    bot = Bot(token=bot_token)
+    
+    month_name = CalendarKeyboard.MONTHS_RU[date.month - 1]
+    date_text = f"{date.day} {month_name} {date.year}"
+    
+    for appointment in appointments:
+        try:
+            patient_id = int(appointment["patient_id"])
+            message_text = f"❌ Ваша запись на {date_text} была отменена, пожалуйста, запишитесь на другое время"
+            
+            await bot.send_message(
+                chat_id=patient_id,
+                text=message_text
+            )
+            print(f"✅ Уведомление отправлено пациенту {appointment['patient_id']}")
+        except Exception as e:
+            print(f"❌ Ошибка отправки уведомления пациенту {appointment['patient_id']}: {e}")
+    
+    # Закрываем сессию бота
+    await bot.session.close()
+
+def delete_appointments_on_date(appointments: list):
+    """Удаляет записи на указанную дату"""
+    appointments_data = load_json_data('appointments')
+    
+    for appointment in appointments:
+        appointment_id = appointment["appointment_id"]
+        doctor_id = appointment["doctor_id"]
+        
+        # Удаляем запись из общего списка
+        if appointment_id in appointments_data.get("appointments", {}):
+            del appointments_data["appointments"][appointment_id]
+        
+        # Удаляем запись из списка врача
+        if (doctor_id in appointments_data.get("doctors", {}) and 
+            "appointments" in appointments_data["doctors"][doctor_id]):
+            appointments_data["doctors"][doctor_id]["appointments"] = [
+                app_id for app_id in appointments_data["doctors"][doctor_id]["appointments"]
+                if app_id != appointment_id
+            ]
+    
+    # Сохраняем изменения
+    save_json_data(appointments_data, 'appointments')
